@@ -29,7 +29,7 @@ type MockTokenParser struct {
 	Err   error
 }
 
-func (m MockTokenParser) Parse(tokenString string, keyFunc jwt.Keyfunc, options ...jwt.ParserOption) (*jwt.Token, error) {
+func (m MockTokenParser) Parse(_ string, keyFunc jwt.Keyfunc, _ ...jwt.ParserOption) (*jwt.Token, error) {
 	if m.Err != nil {
 		return nil, m.Err
 	}
@@ -72,7 +72,7 @@ func buildMockJSONWebKeys() JSONWebKeys {
 
 type ErrorReadCloser struct{}
 
-func (erc *ErrorReadCloser) Read(p []byte) (n int, err error) {
+func (erc *ErrorReadCloser) Read([]byte) (n int, err error) {
 	return 0, fmt.Errorf("mock read error")
 }
 
@@ -360,27 +360,43 @@ func TestConvertJWKToRSAPublicKey_LargeExponent(t *testing.T) {
 }
 
 func TestExtractClaimsCached_Success(t *testing.T) {
-	// Mock token parser
+	// Build mock JWKS
+	mockJWKS := buildMockJSONWebKeys()
+
+	// Convert mock JWKS to RSA public key
+	client := JWKSClient{
+		logger:       logging.NoOpLogger{},
+		rsaKeysCache: make(map[string]*rsa.PublicKey),
+	}
+	rsaKey, err := client.convertJWKToRSAPublicKey(mockJWKS)
+	if err != nil {
+		t.Fatalf("Failed to convert mock JWKS to RSA public key: %v", err)
+	}
+
+	// Populate rsaKeysCache with the mock RSA public key
+	client.rsaKeysCache[mockJWKS.Kid] = rsaKey
+
+	// Mock token with correct signing method and header
 	mockToken := &jwt.Token{
 		Valid: true,
 		Claims: jwt.MapClaims{
 			"claim1": "value1",
 			"claim2": "value2",
 		},
+		Method: jwt.SigningMethodRS256,
+		Header: map[string]interface{}{
+			"kid": mockJWKS.Kid,
+		},
 	}
+
+	// Mock token parser
 	mockParser := MockTokenParser{
 		Token: mockToken,
 		Err:   nil,
 	}
 
-	// Create JWKSClient with mocked token parser
-	client := JWKSClient{
-		logger: logging.NoOpLogger{},
-		rsaKeysCache: map[string]*rsa.PublicKey{
-			"testKid": &rsa.PublicKey{}, // Mocked RSA public key
-		},
-		tokenParser: mockParser,
-	}
+	// Update client with mocked token parser
+	client.tokenParser = mockParser
 
 	// Mock a valid ID token
 	idToken := "mocked.valid.token"
@@ -463,5 +479,210 @@ func TestExtractClaimsCached_MissingKid(t *testing.T) {
 		t.Error("Expected an error, got nil")
 	} else if !strings.Contains(err.Error(), "token header 'kid' is missing or not a string") {
 		t.Errorf("Expected error to contain 'token header 'kid' is missing or not a string', got %v", err)
+	}
+}
+
+func TestExtractClaimsCached_NonRSASigningMethod(t *testing.T) {
+	// Create a JWKSClient instance with necessary mocks
+	client := JWKSClient{
+		logger:       logging.NoOpLogger{},
+		rsaKeysCache: make(map[string]*rsa.PublicKey),
+		tokenParser:  MockTokenParser{}, // Assuming MockTokenParser can handle non-RSA tokens
+	}
+
+	// Mock token with a non-RSA signing method (e.g., HMAC)
+	mockToken := &jwt.Token{
+		Valid: true,
+		Claims: jwt.MapClaims{
+			"claim1": "value1",
+			"claim2": "value2",
+		},
+		Method: jwt.SigningMethodHS256, // Non-RSA signing method
+		Header: map[string]interface{}{
+			"alg": "HS256",
+		},
+	}
+
+	// Mock token parser to return the mock token
+	mockParser := MockTokenParser{
+		Token: mockToken,
+		Err:   nil,
+	}
+
+	// Update client with mocked token parser
+	client.tokenParser = mockParser
+
+	// Mock a valid ID token
+	idToken := "mocked.valid.token"
+
+	// Execute
+	_, err := client.extractClaimsCached(idToken)
+
+	// Assert
+	if err == nil {
+		t.Errorf("Expected an error for non-RSA signing method, got no error")
+	} else if !strings.Contains(err.Error(), "unexpected signing method") {
+		t.Errorf("Expected 'unexpected signing method' error, got %v", err)
+	}
+}
+
+func TestExtractClaims_SuccessWithValidTokenAndJWKS(t *testing.T) {
+	// Setup JWKSClient with necessary mocks and a pre-populated JWKS cache
+	mockJWKS := buildMockJSONWebKeys()
+	client := JWKSClient{
+		logger: logging.NoOpLogger{},
+		rsaKeysCache: map[string]*rsa.PublicKey{
+			mockJWKS.Kid: {}, // Mock RSA public key
+		},
+		jwks: &JWKS{Keys: []JSONWebKeys{mockJWKS}},
+		tokenParser: MockTokenParser{
+			Token: &jwt.Token{
+				Valid: true,
+				Claims: jwt.MapClaims{
+					"claim1": "value1",
+					"claim2": "value2",
+				},
+				Method: jwt.SigningMethodRS256,
+				Header: map[string]interface{}{
+					"kid": mockJWKS.Kid,
+				},
+			},
+			Err: nil,
+		},
+	}
+
+	// Mock a valid ID token
+	idToken := "mocked.valid.token"
+
+	// Execute
+	claims, err := client.ExtractClaims(idToken)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if val, ok := claims["claim1"]; !ok || val != "value1" {
+		t.Errorf("Expected claim1 to be 'value1', got '%v'", val)
+	}
+	if val, ok := claims["claim2"]; !ok || val != "value2" {
+		t.Errorf("Expected claim2 to be 'value2', got '%v'", val)
+	}
+}
+
+func TestExtractClaims_FetchJWKSWhenCacheIsEmpty(t *testing.T) {
+	// Setup JWKSClient with necessary mocks and empty JWKS cache
+	client := JWKSClient{
+		logger:       logging.NoOpLogger{},
+		rsaKeysCache: make(map[string]*rsa.PublicKey),
+		httpClient: &MockHTTPClient{
+			Response: &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(buildMockJWKSString())),
+			},
+			Err: nil,
+		},
+	}
+
+	// Mock token with valid signature and claims
+	mockJWKS := buildMockJSONWebKeys()
+	rsaKey, _ := client.convertJWKToRSAPublicKey(mockJWKS)
+	client.rsaKeysCache[mockJWKS.Kid] = rsaKey
+
+	mockToken := &jwt.Token{
+		Valid: true,
+		Claims: jwt.MapClaims{
+			"claim1": "value1",
+			"claim2": "value2",
+		},
+		Method: jwt.SigningMethodRS256,
+		Header: map[string]interface{}{
+			"kid": mockJWKS.Kid,
+		},
+	}
+
+	// Mock token parser to return the mock token
+	mockParser := MockTokenParser{
+		Token: mockToken,
+		Err:   nil,
+	}
+	client.tokenParser = mockParser
+
+	// Mock a valid ID token
+	idToken := "mocked.valid.token"
+
+	// Execute
+	claims, err := client.ExtractClaims(idToken)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("Expected no error when fetching JWKS, got %v", err)
+	}
+	if val, ok := claims["claim1"]; !ok || val != "value1" {
+		t.Errorf("Expected claim1 to be 'value1', got '%v'", val)
+	}
+	if val, ok := claims["claim2"]; !ok || val != "value2" {
+		t.Errorf("Expected claim2 to be 'value2', got '%v'", val)
+	}
+}
+
+func TestExtractClaims_RefreshJWKSOnSignatureValidationFailure(t *testing.T) {
+	// Setup JWKSClient with necessary mocks
+	client := JWKSClient{
+		logger:       logging.NoOpLogger{},
+		rsaKeysCache: make(map[string]*rsa.PublicKey), // Initially empty cache
+		tokenParser: MockTokenParser{
+			Token: &jwt.Token{
+				Valid: false, // Simulate validation failure
+			},
+			Err: jwt.ErrTokenSignatureInvalid, // Force signature validation error
+		},
+	}
+	client.httpClient = &MockHTTPClient{
+		Response: &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(buildMockJWKSString())),
+		},
+		Err: nil,
+	}
+
+	// Mock a valid ID token
+	idToken := "mocked.invalid.token"
+
+	// Execute
+	_, err := client.ExtractClaims(idToken)
+
+	// Assert
+	if err == nil {
+		t.Errorf("Expected an error due to signature validation failure, got no error")
+	}
+	if len(client.rsaKeysCache) == 0 {
+		t.Errorf("Expected JWKS cache to be refreshed and populated, found empty")
+	}
+}
+
+func TestExtractClaims_HandleErrorsInJWKSFetchOrTokenValidation(t *testing.T) {
+	// Setup JWKSClient with necessary mocks
+	client := JWKSClient{
+		logger:       logging.NoOpLogger{},
+		rsaKeysCache: make(map[string]*rsa.PublicKey),
+		tokenParser: MockTokenParser{
+			Token: nil,
+			Err:   fmt.Errorf("token validation error"),
+		},
+	}
+	client.httpClient = &MockHTTPClient{
+		Response: nil, // Simulate JWKS fetch error
+		Err:      fmt.Errorf("failed to fetch JWKS"),
+	}
+
+	// Mock a valid ID token
+	idToken := "mocked.valid.token"
+
+	// Execute
+	_, err := client.ExtractClaims(idToken)
+
+	// Assert
+	if err == nil {
+		t.Errorf("Expected an error due to JWKS fetching or token validation, got no error")
 	}
 }
