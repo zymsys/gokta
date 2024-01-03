@@ -19,8 +19,8 @@ func LogAndReturnError(logFunc LogFunc, args ...interface{}) error {
 	if len(args) > 0 {
 		// Check if the last argument is an error that needs to be wrapped
 		if err, ok := args[len(args)-1].(error); ok {
-			// Create a new error message wrapping the original error
-			errMsg = fmt.Errorf(strings.Trim(fmt.Sprint(args[:len(args)-1]...), "[]"), err)
+			// Create a new error message wrapping the original error with %w
+			errMsg = fmt.Errorf(strings.Trim(fmt.Sprint(args[:len(args)-1]...), "[]")+": %w", err)
 		} else {
 			// Create a simple error message
 			errMsg = fmt.Errorf(fmt.Sprint(args...))

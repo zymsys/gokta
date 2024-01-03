@@ -93,16 +93,16 @@ func TestNewJWKSClient(t *testing.T) {
 	client := NewJWKSClient(mockConfig)
 
 	// Assertions
-	if client.issuer != mockConfig.Issuer {
-		t.Errorf("Expected issuer to be %s, got %s", mockConfig.Issuer, client.issuer)
+	if client.config.Issuer != mockConfig.Issuer {
+		t.Errorf("Expected issuer to be %s, got %s", mockConfig.Issuer, client.config.Issuer)
 	}
-	if client.clientId != mockConfig.ClientID {
-		t.Errorf("Expected client ID to be %s, got %s", mockConfig.ClientID, client.clientId)
+	if client.config.ClientID != mockConfig.ClientID {
+		t.Errorf("Expected client ID to be %s, got %s", mockConfig.ClientID, client.config.ClientID)
 	}
 	if client.logger != mockConfig.Logger {
 		t.Error("Logger is not set correctly")
 	}
-	if client.httpClient != mockConfig.HttpClient {
+	if client.config.HttpClient != mockConfig.HttpClient {
 		t.Error("HTTP client is not set correctly")
 	}
 	if client.rsaKeysCache == nil {
@@ -122,8 +122,10 @@ func TestFetchHTTPResponse_Success(t *testing.T) {
 
 	// Create JWKSClient with the mock client
 	client := &JWKSClient{
-		httpClient: mockClient,
-		issuer:     "https://example.com",
+		config: config.Config{
+			Issuer:     "https://example.com",
+			HttpClient: mockClient,
+		},
 	}
 
 	// Call fetchHTTPResponse
@@ -147,9 +149,11 @@ func TestFetchHTTPResponse_RequestError(t *testing.T) {
 
 	// Create JWKSClient with the mock client
 	client := &JWKSClient{
-		httpClient: mockClient,
-		logger:     logging.NoOpLogger{},
-		issuer:     "https://example.com",
+		config: config.Config{
+			Issuer:     "https://example.com",
+			HttpClient: mockClient,
+		},
+		logger: logging.NoOpLogger{},
 	}
 
 	// Call fetchHTTPResponse
@@ -176,9 +180,11 @@ func TestFetchHTTPResponse_Non200Response(t *testing.T) {
 
 	// Create JWKSClient with the mock client
 	client := &JWKSClient{
-		httpClient: mockClient,
-		logger:     logging.NoOpLogger{},
-		issuer:     "https://example.com",
+		config: config.Config{
+			Issuer:     "https://example.com",
+			HttpClient: mockClient,
+		},
+		logger: logging.NoOpLogger{},
 	}
 
 	// Call fetchHTTPResponse
@@ -202,9 +208,11 @@ func TestFetchHTTPResponse_BodyReadError(t *testing.T) {
 
 	// Create JWKSClient with the mock client
 	client := &JWKSClient{
-		httpClient: mockClient,
-		logger:     logging.NoOpLogger{},
-		issuer:     "https://example.com",
+		config: config.Config{
+			Issuer:     "https://example.com",
+			HttpClient: mockClient,
+		},
+		logger: logging.NoOpLogger{},
 	}
 
 	// Call fetchHTTPResponse
@@ -396,7 +404,7 @@ func TestExtractClaimsCached_Success(t *testing.T) {
 	}
 
 	// Update client with mocked token parser
-	client.tokenParser = mockParser
+	client.config.TokenParser = mockParser
 
 	// Mock a valid ID token
 	idToken := "mocked.valid.token"
@@ -429,7 +437,9 @@ func TestExtractClaimsCached_InvalidSignature(t *testing.T) {
 	client := JWKSClient{
 		logger:       logging.NoOpLogger{},
 		rsaKeysCache: make(map[string]*rsa.PublicKey),
-		tokenParser:  mockParser,
+		config: config.Config{
+			TokenParser: mockParser,
+		},
 	}
 
 	// Mock an invalid ID token
@@ -465,7 +475,9 @@ func TestExtractClaimsCached_MissingKid(t *testing.T) {
 	client := JWKSClient{
 		logger:       logging.NoOpLogger{},
 		rsaKeysCache: make(map[string]*rsa.PublicKey),
-		tokenParser:  mockParser,
+		config: config.Config{
+			TokenParser: mockParser,
+		},
 	}
 
 	// Mock a token with missing 'kid'
@@ -487,7 +499,7 @@ func TestExtractClaimsCached_NonRSASigningMethod(t *testing.T) {
 	client := JWKSClient{
 		logger:       logging.NoOpLogger{},
 		rsaKeysCache: make(map[string]*rsa.PublicKey),
-		tokenParser:  MockTokenParser{}, // Assuming MockTokenParser can handle non-RSA tokens
+		config:       config.Config{},
 	}
 
 	// Mock token with a non-RSA signing method (e.g., HMAC)
@@ -510,7 +522,7 @@ func TestExtractClaimsCached_NonRSASigningMethod(t *testing.T) {
 	}
 
 	// Update client with mocked token parser
-	client.tokenParser = mockParser
+	client.config.TokenParser = mockParser
 
 	// Mock a valid ID token
 	idToken := "mocked.valid.token"
@@ -535,19 +547,21 @@ func TestExtractClaims_SuccessWithValidTokenAndJWKS(t *testing.T) {
 			mockJWKS.Kid: {}, // Mock RSA public key
 		},
 		jwks: &JWKS{Keys: []JSONWebKeys{mockJWKS}},
-		tokenParser: MockTokenParser{
-			Token: &jwt.Token{
-				Valid: true,
-				Claims: jwt.MapClaims{
-					"claim1": "value1",
-					"claim2": "value2",
+		config: config.Config{
+			TokenParser: MockTokenParser{
+				Token: &jwt.Token{
+					Valid: true,
+					Claims: jwt.MapClaims{
+						"claim1": "value1",
+						"claim2": "value2",
+					},
+					Method: jwt.SigningMethodRS256,
+					Header: map[string]interface{}{
+						"kid": mockJWKS.Kid,
+					},
 				},
-				Method: jwt.SigningMethodRS256,
-				Header: map[string]interface{}{
-					"kid": mockJWKS.Kid,
-				},
+				Err: nil,
 			},
-			Err: nil,
 		},
 	}
 
@@ -574,12 +588,14 @@ func TestExtractClaims_FetchJWKSWhenCacheIsEmpty(t *testing.T) {
 	client := JWKSClient{
 		logger:       logging.NoOpLogger{},
 		rsaKeysCache: make(map[string]*rsa.PublicKey),
-		httpClient: &MockHTTPClient{
-			Response: &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(strings.NewReader(buildMockJWKSString())),
+		config: config.Config{
+			HttpClient: &MockHTTPClient{
+				Response: &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader(buildMockJWKSString())),
+				},
+				Err: nil,
 			},
-			Err: nil,
 		},
 	}
 
@@ -605,7 +621,7 @@ func TestExtractClaims_FetchJWKSWhenCacheIsEmpty(t *testing.T) {
 		Token: mockToken,
 		Err:   nil,
 	}
-	client.tokenParser = mockParser
+	client.config.TokenParser = mockParser
 
 	// Mock a valid ID token
 	idToken := "mocked.valid.token"
@@ -630,19 +646,21 @@ func TestExtractClaims_RefreshJWKSOnSignatureValidationFailure(t *testing.T) {
 	client := JWKSClient{
 		logger:       logging.NoOpLogger{},
 		rsaKeysCache: make(map[string]*rsa.PublicKey), // Initially empty cache
-		tokenParser: MockTokenParser{
-			Token: &jwt.Token{
-				Valid: false, // Simulate validation failure
+		config: config.Config{
+			HttpClient: &MockHTTPClient{
+				Response: &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader(buildMockJWKSString())),
+				},
+				Err: nil,
 			},
-			Err: jwt.ErrTokenSignatureInvalid, // Force signature validation error
+			TokenParser: MockTokenParser{
+				Token: &jwt.Token{
+					Valid: false, // Simulate validation failure
+				},
+				Err: jwt.ErrTokenSignatureInvalid, // Force signature validation error
+			},
 		},
-	}
-	client.httpClient = &MockHTTPClient{
-		Response: &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(strings.NewReader(buildMockJWKSString())),
-		},
-		Err: nil,
 	}
 
 	// Mock a valid ID token
@@ -665,14 +683,16 @@ func TestExtractClaims_HandleErrorsInJWKSFetchOrTokenValidation(t *testing.T) {
 	client := JWKSClient{
 		logger:       logging.NoOpLogger{},
 		rsaKeysCache: make(map[string]*rsa.PublicKey),
-		tokenParser: MockTokenParser{
-			Token: nil,
-			Err:   fmt.Errorf("token validation error"),
+		config: config.Config{
+			HttpClient: &MockHTTPClient{
+				Response: nil, // Simulate JWKS fetch error
+				Err:      fmt.Errorf("failed to fetch JWKS"),
+			},
+			TokenParser: MockTokenParser{
+				Token: nil,
+				Err:   fmt.Errorf("token validation error"),
+			},
 		},
-	}
-	client.httpClient = &MockHTTPClient{
-		Response: nil, // Simulate JWKS fetch error
-		Err:      fmt.Errorf("failed to fetch JWKS"),
 	}
 
 	// Mock a valid ID token
@@ -684,5 +704,19 @@ func TestExtractClaims_HandleErrorsInJWKSFetchOrTokenValidation(t *testing.T) {
 	// Assert
 	if err == nil {
 		t.Errorf("Expected an error due to JWKS fetching or token validation, got no error")
+	}
+}
+
+func TestIsTokenExpiredError(t *testing.T) {
+	// Test with direct jwt.ErrTokenExpired
+	directErr := jwt.ErrTokenExpired
+	if !IsTokenExpiredError(directErr) {
+		t.Errorf("IsTokenExpiredError failed to recognize direct jwt.ErrTokenExpired")
+	}
+
+	// Test with wrapped jwt.ErrTokenExpired
+	wrappedErr := logging.LogAndReturnError(logging.NoOpLogger{}.Error, "Wrapped error: ", jwt.ErrTokenExpired)
+	if !IsTokenExpiredError(wrappedErr) {
+		t.Errorf("IsTokenExpiredError failed to recognize wrapped jwt.ErrTokenExpired")
 	}
 }

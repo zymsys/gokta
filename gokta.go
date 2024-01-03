@@ -116,6 +116,18 @@ func New(config config.Config) *OAuthClient {
 	}
 }
 
+// GetOrCreateSession attempts to retrieve the existing session,
+// and if it fails, it creates a new session.
+func (c *OAuthClient) getSession(r *http.Request) (*sessions.Session, error) {
+	session, err := c.SessionStore.Get(r, sessionName)
+	if err != nil {
+		c.Config.Logger.Error("Gokta could not get session", err)
+		// Return an empty value for the session
+		session = sessions.NewSession(c.SessionStore, sessionName)
+	}
+	return session, nil
+}
+
 // Middleware returns a new HTTP middleware for handling authentication.
 func (c *OAuthClient) Middleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -123,9 +135,8 @@ func (c *OAuthClient) Middleware() func(http.Handler) http.Handler {
 
 			c.Config.Logger.Debug("Gokta middleware called for", r.URL.Path)
 
-			session, err := c.SessionStore.Get(r, sessionName)
+			session, err := c.getSession(r)
 			if err != nil {
-				c.Config.Logger.Error("Gokta could not get session", err)
 				http.Error(w, "Could not get session", http.StatusInternalServerError)
 				return
 			}
@@ -154,7 +165,7 @@ func (c *OAuthClient) Middleware() func(http.Handler) http.Handler {
 	}
 }
 
-// redirectToLogin redirects the user to Okta's login page.
+// RedirectToLogin redirects the user to Okta's login page.
 func (c *OAuthClient) RedirectToLogin(w http.ResponseWriter, r *http.Request) {
 	// Generate a new state string for this authentication attempt
 	state, err := generateState()
@@ -165,9 +176,8 @@ func (c *OAuthClient) RedirectToLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Store the state string in the session for later validation
-	session, err := c.SessionStore.Get(r, sessionName)
+	session, err := c.getSession(r)
 	if err != nil {
-		c.Config.Logger.Error("Gokta could not get session", err)
 		http.Error(w, "Could not get session", http.StatusInternalServerError)
 		return
 	}
@@ -178,6 +188,7 @@ func (c *OAuthClient) RedirectToLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Could not save session", http.StatusInternalServerError)
 		return
 	}
+	c.Config.Logger.Debug("Gokta saved state in session: ", state)
 
 	// Construct the OAuth2 URL
 	rawURL := c.Config.Issuer + "/v1/authorize"
@@ -199,6 +210,7 @@ func (c *OAuthClient) RedirectToLogin(w http.ResponseWriter, r *http.Request) {
 	authURL.RawQuery = params.Encode()
 
 	// Redirect the user to the constructed URL
+	c.Config.Logger.Debug("Gokta redirecting to auth URL: ", authURL.String())
 	http.Redirect(w, r, authURL.String(), http.StatusFound)
 }
 
@@ -274,15 +286,15 @@ func (c *OAuthClient) DefaultOktaCallbackHandler(w http.ResponseWriter, r *http.
 	state := params.Get("state")
 
 	// Retrieve the original state from your session store
-	session, err := c.SessionStore.Get(r, sessionName)
+	session, err := c.getSession(r)
 	if err != nil {
-		c.Config.Logger.Error("Gokta could not get session", err)
 		http.Error(w, "Could not get session", http.StatusInternalServerError)
 		return
 	}
 
 	// Verify expected session variables exist
 	if session.Values["state"] == nil {
+		c.Config.Logger.Error("Gokta state not found in session")
 		c.RedirectToLogin(w, r)
 		return
 	}
@@ -330,7 +342,7 @@ func (c *OAuthClient) RegisterCallbackRoute(registerFunc RouterFunc) error {
 	return nil
 }
 
-func (c *OAuthClient) GetUserClaims(r *http.Request) (jwt.MapClaims, error) {
+func (c *OAuthClient) GetUserClaims(w http.ResponseWriter, r *http.Request) (jwt.MapClaims, error) {
 	session, err := c.SessionStore.Get(r, sessionName)
 	if err != nil {
 		return nil, err
@@ -341,6 +353,28 @@ func (c *OAuthClient) GetUserClaims(r *http.Request) (jwt.MapClaims, error) {
 	}
 	claims, err := c.jwksClient.ExtractClaims(idToken)
 	if err != nil {
+		// Check if the error is due to an expired token
+		if jwks.IsTokenExpiredError(err) {
+			// Token is expired, refresh it
+			refreshToken, ok := session.Values["refresh_token"].(string)
+			if !ok {
+				return nil, fmt.Errorf("refresh token not found")
+			}
+			tokenResponse, err := c.RefreshTokens(refreshToken)
+			if err != nil {
+				return nil, err
+			}
+			// Save the new tokens in the session
+			session.Values["id_token"] = tokenResponse.IDToken
+			session.Values["access_token"] = tokenResponse.AccessToken
+			session.Values["auth_expires"] = tokenResponse.ExpirationTime.Unix()
+			err = session.Save(r, w)
+			if err != nil {
+				return nil, err
+			}
+			// Retry extracting the claims with the new ID token
+			return c.jwksClient.ExtractClaims(tokenResponse.IDToken)
+		}
 		return nil, err
 	}
 	return claims, nil
@@ -349,7 +383,7 @@ func (c *OAuthClient) GetUserClaims(r *http.Request) (jwt.MapClaims, error) {
 // UserClaimsHandler retrieves user information from the session and returns it as JSON.
 func (c *OAuthClient) UserClaimsHandler(w http.ResponseWriter, r *http.Request) {
 
-	userInfo, err := c.GetUserClaims(r)
+	userInfo, err := c.GetUserClaims(w, r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -385,10 +419,9 @@ func (c *OAuthClient) LogoutURI(idToken string) (string, error) {
 
 func (c *OAuthClient) LogoutHandler(w http.ResponseWriter, r *http.Request) {
 	// Retrieve the session
-	session, err := c.SessionStore.Get(r, sessionName)
+	session, err := c.getSession(r)
 	if err != nil {
-		c.Config.Logger.Error("Gokta could not get session", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Could not get session", http.StatusInternalServerError)
 		return
 	}
 
@@ -417,4 +450,67 @@ func (c *OAuthClient) LogoutHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, logoutURI, http.StatusFound)
+}
+
+func (c *OAuthClient) RefreshTokens(refreshToken string) (*TokenResponse, error) {
+	// Construct the token refresh URL
+	tokenURL := c.Config.Issuer + "/v1/token"
+
+	// Create the request to refresh the tokens
+	req, err := http.NewRequest("POST", tokenURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// Add the necessary request headers and parameters
+	req.SetBasicAuth(c.Config.ClientID, c.Config.ClientSecret)
+	h := req.Header
+	h.Add("Accept", "application/json")
+	h.Add("Content-Type", "application/x-www-form-urlencoded")
+	h.Add("Connection", "close")
+	h.Add("Content-Length", "0")
+
+	req.URL.RawQuery = url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+	}.Encode()
+
+	// Perform the token refresh
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			c.Config.Logger.Error("Gokta could not close response body", err)
+		}
+	}(resp.Body)
+
+	// Check the response status code
+	if resp.StatusCode != http.StatusOK {
+		var errResp TokenErrorResponse
+		if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
+			return nil, err
+		}
+		if errResp.ErrorCode == "" {
+			reader := io.LimitReader(resp.Body, 100)
+			body, _ := io.ReadAll(reader)
+			return nil, fmt.Errorf("token refresh failed: %d - %s", resp.StatusCode, body)
+		}
+		return nil, fmt.Errorf("token refresh failed: %s - %s", errResp.ErrorCode, errResp.ErrorSummary)
+	}
+
+	// Decode the response body into the TokenResponse struct
+	var tokenResponse TokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResponse); err != nil {
+		return nil, err
+	}
+
+	// Update the expiration time of the tokens
+	tokenIssueTime := time.Now()
+	tokenResponse.ExpirationTime = tokenIssueTime.Add(time.Duration(tokenResponse.ExpiresIn) * time.Second)
+
+	return &tokenResponse, nil
 }

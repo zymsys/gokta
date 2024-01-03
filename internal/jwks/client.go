@@ -33,10 +33,6 @@ type JSONWebKeys struct {
 	X5c []string `json:"x5c"`
 }
 
-type HTTPClient interface {
-	Get(url string) (*http.Response, error)
-}
-
 type JWKSClient struct {
 	jwks         *JWKS
 	rsaKeysCache map[string]*rsa.PublicKey
@@ -45,18 +41,14 @@ type JWKSClient struct {
 	logger       logging.Logger
 	issuer       string
 	clientId     string
-	httpClient   HTTPClient
-	tokenParser  config.TokenParser
+	config       config.Config
 }
 
 func NewJWKSClient(config config.Config) *JWKSClient {
 	return &JWKSClient{
 		rsaKeysCache: make(map[string]*rsa.PublicKey),
-		issuer:       config.Issuer,
-		clientId:     config.ClientID,
+		config:       config,
 		logger:       config.Logger,
-		httpClient:   config.HttpClient,
-		tokenParser:  config.TokenParser,
 	}
 }
 
@@ -70,7 +62,7 @@ func (c *JWKSClient) fetchJWKS() error {
 
 	c.logger.Debug("Fetching JWKS from Okta")
 
-	body, err := c.fetchHTTPResponse(fmt.Sprintf("%s/v1/keys", strings.TrimSuffix(c.issuer, "/")))
+	body, err := c.fetchHTTPResponse(fmt.Sprintf("%s/v1/keys", strings.TrimSuffix(c.config.Issuer, "/")))
 	if err != nil {
 		return err
 	}
@@ -80,9 +72,9 @@ func (c *JWKSClient) fetchJWKS() error {
 
 // fetchHTTPResponse handles the HTTP request and response.
 func (c *JWKSClient) fetchHTTPResponse(url string) ([]byte, error) {
-	resp, err := c.httpClient.Get(url)
+	resp, err := c.config.HttpClient.Get(url)
 	if err != nil {
-		return nil, logging.LogAndReturnError(c.logger.Error, "Failed to fetch JWKS from URL: ", c.issuer, " - error: ", err)
+		return nil, logging.LogAndReturnError(c.logger.Error, "Failed to fetch JWKS from URL: ", c.config.Issuer, " - error: ", err)
 	}
 	defer func(Body io.ReadCloser) {
 		deferredErr := Body.Close()
@@ -93,7 +85,7 @@ func (c *JWKSClient) fetchHTTPResponse(url string) ([]byte, error) {
 
 	// Check for non-success status code
 	if resp.StatusCode != http.StatusOK {
-		return nil, logging.LogAndReturnError(c.logger.Error, "Received non-200 status code from JWKS endpoint: ", resp.StatusCode, " - URL: ", c.issuer)
+		return nil, logging.LogAndReturnError(c.logger.Error, "Received non-200 status code from JWKS endpoint: ", resp.StatusCode, " - URL: ", c.config.Issuer)
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -109,7 +101,7 @@ func (c *JWKSClient) updateJWKSCache(body []byte) error {
 	var jwks JWKS
 	err := json.NewDecoder(bytes.NewReader(body)).Decode(&jwks)
 	if err != nil {
-		return logging.LogAndReturnError(c.logger.Error, "Failed to decode JWKS JSON response from: ", c.issuer, " - error: ", err)
+		return logging.LogAndReturnError(c.logger.Error, "Failed to decode JWKS JSON response from: ", c.config.Issuer, " - error: ", err)
 	}
 
 	// Update the RSA keys cache
@@ -127,12 +119,11 @@ func (c *JWKSClient) updateJWKSCache(body []byte) error {
 	return nil
 }
 
-// isSignatureValidationError checks if the provided error is a JWT signature validation error.
+// IsTokenExpiredError checks if the provided error is a JWT signature validation error or a token expiration error.
 // This is used to determine if a token's signature validation failure is due to an outdated JWKS,
-// in which case the JWKS can be refreshed and validation retried.
-func isSignatureValidationError(err error) bool {
-	// Check if the error is ErrTokenSignatureInvalid
-	return errors.Is(err, jwt.ErrTokenSignatureInvalid)
+// or if the token is expired, in which case the JWKS can be refreshed and validation retried.
+func IsTokenExpiredError(err error) bool {
+	return errors.Is(err, jwt.ErrTokenExpired)
 }
 
 // convertJWKToRSAPublicKey converts a JSON Web Key (JWK) to an RSA public key.
@@ -192,7 +183,7 @@ func (c *JWKSClient) convertJWKToRSAPublicKey(jwk JSONWebKeys) (*rsa.PublicKey, 
 // This method is optimized to use the RSA keys cache to avoid fetching JWKS for every token validation.
 func (c *JWKSClient) extractClaimsCached(idToken string) (jwt.MapClaims, error) {
 	c.logger.Debug("Parsing and validating ID token")
-	token, err := c.tokenParser.Parse(idToken, func(token *jwt.Token) (interface{}, error) {
+	token, err := c.config.TokenParser.Parse(idToken, func(token *jwt.Token) (interface{}, error) {
 		// Verify the token algorithm
 		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -241,7 +232,7 @@ func (c *JWKSClient) ExtractClaims(idToken string) (jwt.MapClaims, error) {
 	}
 	claims, err := c.extractClaimsCached(idToken)
 	if err != nil {
-		if isSignatureValidationError(err) {
+		if IsTokenExpiredError(err) {
 			// Signature validation failed, possibly due to an outdated JWKS. Refresh JWKS and retry.
 			c.logger.Warn("Signature validation failed, refreshing JWKS:", err)
 			if refreshErr := c.fetchJWKS(); refreshErr != nil {

@@ -10,17 +10,20 @@ type TokenParser interface {
 	Parse(tokenString string, keyFunc jwt.Keyfunc, options ...jwt.ParserOption) (*jwt.Token, error)
 }
 
+type HTTPClient interface {
+	Get(url string) (*http.Response, error)
+}
+
 // Config for the Okta OAuth client.
 type Config struct {
 	ClientID              string
 	ClientSecret          string
 	Issuer                string
 	RedirectURI           string
-	SessionKey            string       // Key for secure cookie encryption
-	LoggedInURI           string       // The URI to redirect to after successful login
-	PostLogoutRedirectURI string       // URI to redirect to after logging out from Okta
-	PublicPaths           []string     // List of paths that don't require authentication
-	HttpClient            *http.Client // Optional HTTP client to use for requests
+	SessionKey            string     // Key for secure cookie encryption
+	LoggedInURI           string     // The URI to redirect to after successful login
+	PostLogoutRedirectURI string     // URI to redirect to after logging out from Okta
+	HttpClient            HTTPClient // Optional HTTP client to use for requests
 	Logger                logging.Logger
 	TokenParser           TokenParser
 }
