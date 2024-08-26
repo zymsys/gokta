@@ -12,10 +12,10 @@ Looking ahead, I aim to expand Gokta's capabilities to include support for Singl
 
 To use Gokta, ensure that your environment meets the following requirements:
 
-1. **Go Version:** Gokta is developed with Go 1.20. It is recommended to use the same version or newer for compatibility.
+1. **Go Version:** Gokta is developed with Go 1.23. It is recommended to use the same version or newer for compatibility.
 2. **External Dependencies:** Gokta relies on the following Go modules:
-    * github.com/gorilla/sessions v1.2.2: A session management library used for handling user sessions.
-    * github.com/golang-jwt/jwt/v5 v5.1.0: Used for JSON Web Token (JWT) parsing and validation.
+    * github.com/gorilla/sessions v1.4.0: A session management library used for handling user sessions.
+    * github.com/golang-jwt/jwt/v5 v5.2.1: Used for JSON Web Token (JWT) parsing and validation.
 3. **Okta Account:** An active Okta account and an Okta application set up for the "Web Application" type. You will need to obtain the ClientID, ClientSecret, and other relevant configuration details from your Okta application.
 4. **Web Application:** Gokta is currently designed for use with web applications. Ensure your project architecture aligns with this use case.
 
@@ -63,6 +63,7 @@ To configure Gokta in your Go project, follow these steps:
             ClientSecret:          "YOUR_OKTA_CLIENT_SECRET",
             Issuer:                "YOUR_OKTA_ISSUER_URL",
             RedirectURI:           "YOUR_APPLICATION_REDIRECT_URI",
+            PublicRedirectURI:     "YOUR_PUBLIC_REDIRECT_URI",  // Optional
             SessionKey:            "YOUR_SESSION_ENCRYPTION_KEY",
             LoggedInURI:           "URI_AFTER_SUCCESSFUL_LOGIN",
             PostLogoutRedirectURI: "URI_AFTER_LOGOUT",
@@ -76,7 +77,7 @@ To configure Gokta in your Go project, follow these steps:
 2. **Configure Session Store:**
     Gokta uses Gorilla Sessions for session management. The session key used in the configuration (SessionKey) should be a secure, random string. This key is crucial for encrypting and securing session data.
 3. **Specify Redirect URIs:**
-    Ensure that the RedirectURI, LoggedInURI, and PostLogoutRedirectURI fields in your configuration are set correctly. These URIs are used during the OAuth flow and after the user logs in or logs out.
+    Ensure that the RedirectURI, LoggedInURI, and PostLogoutRedirectURI fields in your configuration are set correctly. These URIs are used during the OAuth flow and after the user logs in or logs out. If you have anything rewriting URLs, such as a proxy, you can set a different PublicRedirectURI to be used by Okta.
 4. **Logging and HTTP Client (Optional):**
     Gokta supports custom logging and HTTP client configuration. For more detailed information on configuring and using the logging feature, refer to the Logging section below.
     ```go

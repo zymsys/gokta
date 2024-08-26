@@ -20,6 +20,7 @@ type Config struct {
 	ClientSecret          string
 	Issuer                string
 	RedirectURI           string
+	PublicRedirectURI     string     // Will be taken from RedirectURI if not set
 	SessionKey            string     // Key for secure cookie encryption
 	LoggedInURI           string     // The URI to redirect to after successful login
 	PostLogoutRedirectURI string     // URI to redirect to after logging out from Okta

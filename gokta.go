@@ -199,12 +199,18 @@ func (c *OAuthClient) RedirectToLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If it is set, take the redirect URI from PublicRedirectURI. Otherwise, use RedirectURI.
+	redirectURI := c.Config.RedirectURI
+	if c.Config.PublicRedirectURI != "" {
+		redirectURI = c.Config.PublicRedirectURI
+	}
+
 	// Specify the OAuth2 parameters
 	params := url.Values{}
 	params.Add("client_id", c.Config.ClientID)
 	params.Add("response_type", "code")
 	params.Add("scope", "openid profile email")
-	params.Add("redirect_uri", c.Config.RedirectURI)
+	params.Add("redirect_uri", redirectURI)
 	params.Add("state", state)
 
 	authURL.RawQuery = params.Encode()
