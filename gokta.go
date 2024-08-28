@@ -99,8 +99,7 @@ func New(config config.Config) *OAuthClient {
 	}
 
 	if strings.HasPrefix(config.RedirectURI, "http://localhost") {
-		store.Options.Secure = false                     // Allow cookies over HTTP on localhost
-		store.Options.SameSite = http.SameSiteStrictMode // Use strict mode for localhost to prevent sending cookies with cross-site requests
+		store.Options.Secure = false // Allow cookies over HTTP on localhost
 	}
 
 	if config.TokenParser == nil {
