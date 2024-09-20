@@ -301,6 +301,8 @@ func (c *OAuthClient) DefaultOktaCallbackHandler(w http.ResponseWriter, r *http.
 	// Verify the state matches
 	if session.Values["state"] != state {
 		c.Config.Logger.Error("Gokta invalid state parameter")
+		c.Config.Logger.Debug(fmt.Sprintf("Expected state: [%v]", session.Values["state"]))
+		c.Config.Logger.Debug(fmt.Sprintf("Received state: [%v]", state))
 		http.Error(w, "Invalid state parameter", http.StatusBadRequest)
 		return
 	}
