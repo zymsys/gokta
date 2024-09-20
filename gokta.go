@@ -180,6 +180,7 @@ func (c *OAuthClient) RedirectToLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Could not get session", http.StatusInternalServerError)
 		return
 	}
+	c.Config.Logger.Debug("Storing new state in session: ", state)
 	session.Values["state"] = state
 	err = session.Save(r, w)
 	if err != nil {
