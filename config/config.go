@@ -2,6 +2,7 @@ package config
 
 import (
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/gorilla/sessions"
 	"github.com/zymsys/gokta/logging"
 	"net/http"
 )
@@ -23,7 +24,9 @@ type Config struct {
 	SessionKey            string     // Key for secure cookie encryption
 	LoggedInURI           string     // The URI to redirect to after successful login
 	PostLogoutRedirectURI string     // URI to redirect to after logging out from Okta
+	Scope                 string     // OAuth scope
 	HttpClient            HTTPClient // Optional HTTP client to use for requests
 	Logger                logging.Logger
 	TokenParser           TokenParser
+	SessionStore          sessions.Store
 }

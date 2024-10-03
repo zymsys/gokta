@@ -17,7 +17,6 @@ import (
 	"time"
 )
 
-// Exported types
 type Config = config.Config
 type Logger = logging.Logger
 type StandardLogger = logging.StandardLogger
@@ -75,7 +74,6 @@ func generateState() (string, error) {
 	return base64.URLEncoding.EncodeToString(b), nil
 }
 
-// New creates a new OAuthClient with the provided configurations.
 func New(config config.Config) *OAuthClient {
 	if config.Logger == nil {
 		config.Logger = logging.NoOpLogger{}
@@ -83,23 +81,33 @@ func New(config config.Config) *OAuthClient {
 
 	if config.HttpClient == nil {
 		config.HttpClient = &http.Client{
-			// You can set default timeout or other settings here
 			Timeout: time.Second * 30,
 		}
 	}
 
-	store := sessions.NewCookieStore([]byte(config.SessionKey))
-
-	store.Options = &sessions.Options{
-		Path:     "/",                  // The path for the cookie. '/' means it's valid for all subpaths.
-		MaxAge:   86400 * 7,            // MaxAge=0 means no 'Max-Age' attribute specified. MaxAge<0 means delete cookie now.
-		HttpOnly: true,                 // HttpOnly means the cookie is not accessible to JavaScript.
-		Secure:   true,                 // Secure means the cookie will be sent only over HTTPS.
-		SameSite: http.SameSiteLaxMode, // SameSite prevents the browser from sending this cookie along with cross-site requests.
+	if config.Scope == "" {
+		config.Scope = "openid profile email"
 	}
 
-	if strings.HasPrefix(config.RedirectURI, "http://localhost") {
-		store.Options.Secure = false // Allow cookies over HTTP on localhost
+	// Allow the user to provide their own session store
+	if config.SessionStore == nil {
+		// Default to CookieStore if no custom store is provided
+		store := sessions.NewCookieStore([]byte(config.SessionKey))
+		store.Options = &sessions.Options{
+			Path:     "/",
+			MaxAge:   86400 * 7, // 1 week
+			HttpOnly: true,
+			Secure:   true,
+			SameSite: http.SameSiteLaxMode,
+		}
+		config.SessionStore = store
+	}
+
+	// If the session store is a CookieStore, adjust its options for localhost
+	if store, ok := config.SessionStore.(*sessions.CookieStore); ok {
+		if strings.HasPrefix(config.RedirectURI, "http://localhost") {
+			store.Options.Secure = false // Allow cookies over HTTP on localhost
+		}
 	}
 
 	if config.TokenParser == nil {
@@ -110,21 +118,16 @@ func New(config config.Config) *OAuthClient {
 
 	return &OAuthClient{
 		Config:       config,
-		SessionStore: store,
+		SessionStore: config.SessionStore,
 		jwksClient:   jwksClient,
 	}
 }
 
 // GetOrCreateSession attempts to retrieve the existing session,
 // and if it fails, it creates a new session.
-func (c *OAuthClient) getSession(r *http.Request) (*sessions.Session, error) {
-	session, err := c.SessionStore.Get(r, sessionName)
-	if err != nil {
-		c.Config.Logger.Error("Gokta could not get session", err)
-		// Return an empty value for the session
-		session = sessions.NewSession(c.SessionStore, sessionName)
-	}
-	return session, nil
+func (c *OAuthClient) getSession(r *http.Request) *sessions.Session {
+	session, _ := c.SessionStore.Get(r, sessionName)
+	return session
 }
 
 // Middleware returns a new HTTP middleware for handling authentication.
@@ -134,11 +137,7 @@ func (c *OAuthClient) Middleware() func(http.Handler) http.Handler {
 
 			c.Config.Logger.Debug("Gokta middleware called for", r.URL.Path)
 
-			session, err := c.getSession(r)
-			if err != nil {
-				http.Error(w, "Could not get session", http.StatusInternalServerError)
-				return
-			}
+			session := c.getSession(r)
 
 			// Check if the token has expired
 			expiresValue, ok := session.Values["auth_expires"].(int64)
@@ -175,11 +174,7 @@ func (c *OAuthClient) RedirectToLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Store the state string in the session for later validation
-	session, err := c.getSession(r)
-	if err != nil {
-		http.Error(w, "Could not get session", http.StatusInternalServerError)
-		return
-	}
+	session := c.getSession(r)
 	c.Config.Logger.Debug("Storing new state in session: ", state)
 	session.Values["state"] = state
 	err = session.Save(r, w)
@@ -203,7 +198,7 @@ func (c *OAuthClient) RedirectToLogin(w http.ResponseWriter, r *http.Request) {
 	params := url.Values{}
 	params.Add("client_id", c.Config.ClientID)
 	params.Add("response_type", "code")
-	params.Add("scope", "openid profile email")
+	params.Add("scope", c.Config.Scope)
 	params.Add("redirect_uri", c.Config.RedirectURI)
 	params.Add("state", state)
 
@@ -286,11 +281,7 @@ func (c *OAuthClient) DefaultOktaCallbackHandler(w http.ResponseWriter, r *http.
 	state := params.Get("state")
 
 	// Retrieve the original state from your session store
-	session, err := c.getSession(r)
-	if err != nil {
-		http.Error(w, "Could not get session", http.StatusInternalServerError)
-		return
-	}
+	session := c.getSession(r)
 
 	// Verify expected session variables exist
 	if session.Values["state"] == nil {
@@ -421,15 +412,14 @@ func (c *OAuthClient) LogoutURI(idToken string) (string, error) {
 
 func (c *OAuthClient) LogoutHandler(w http.ResponseWriter, r *http.Request) {
 	// Retrieve the session
-	session, err := c.getSession(r)
-	if err != nil {
-		http.Error(w, "Could not get session", http.StatusInternalServerError)
-		return
-	}
+	session := c.getSession(r)
 
 	// Clear the session
-	session.Options.MaxAge = -1 // Set the MaxAge to -1 to delete the session
-	err = session.Save(r, w)
+	options := *session.Options // Create a copy of the session options
+	options.MaxAge = -1         // Set the MaxAge to -1 to delete the session
+	session.Options = &options  // Apply the modified options to the session
+
+	err := session.Save(r, w)
 	if err != nil {
 		c.Config.Logger.Error("Gokta could not save session", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)

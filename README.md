@@ -75,6 +75,7 @@ To configure Gokta in your Go project, follow these steps:
    ```
 2. **Configure Session Store:**
     Gokta uses Gorilla Sessions for session management. The session key used in the configuration (SessionKey) should be a secure, random string. This key is crucial for encrypting and securing session data.
+    If you like you can alternatively provide your own session store using Config.SessionStore.
 3. **Specify Redirect URIs:**
     Ensure that the RedirectURI, LoggedInURI, and PostLogoutRedirectURI fields in your configuration are set correctly. These URIs are used during the OAuth flow and after the user logs in or logs out.
 4. **Logging and HTTP Client (Optional):**
